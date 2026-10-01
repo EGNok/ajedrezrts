@@ -287,7 +287,8 @@
 
         document.getElementById('btn-create-room').addEventListener('click', async () => {
             document.getElementById('btn-create-room').innerText = "Creando...";
-            let seed = Math.random();
+            // ARREGLO: Generar una semilla enorme verdaderamente aleatoria por cada partida nueva
+            let seed = Math.floor(Math.random() * 9999999); 
             let newRoom = await addDoc(roomsRef, { status: 'waiting', p1: currentUser.uid, p1Name: playerName, seed: seed, ts: Date.now() });
             
             currentRoomId = newRoom.id;
@@ -334,16 +335,11 @@
                 // Escuchar acciones desde Firebase
                 const actionsRef = collection(db, 'artifacts', appId, 'public', 'data', `actions_${currentRoomId}`);
                 actionsListener = onSnapshot(actionsRef, (snapshot) => {
-                    let newActions = [];
                     snapshot.docs.forEach(docSnap => {
                         if (!processedActions.has(docSnap.id)) {
-                            newActions.push({ docId: docSnap.id, ...docSnap.data() });
+                            processedActions.add(docSnap.id);
+                            actionQueue.push({ docId: docSnap.id, ...docSnap.data() });
                         }
-                    });
-                    newActions.sort((a, b) => a.ts - b.ts);
-                    newActions.forEach(act => {
-                        processedActions.add(act.docId);
-                        actionQueue.push(act);
                     });
                 });
 
@@ -517,8 +513,10 @@
         function simulationUpdate() {
             if (gameStatus !== 'playing') return;
 
-            // Procesar Cola de Comandos
-            while(actionQueue.length > 0) {
+            // ARREGLO LOCKSTEP: Ordenar cronológicamente y esperar 400ms para evitar desincronización por lag
+            actionQueue.sort((a, b) => a.ts - b.ts);
+            let now = Date.now();
+            while(actionQueue.length > 0 && (now - actionQueue[0].ts > 400)) {
                 processAction(actionQueue.shift());
             }
 
@@ -585,15 +583,15 @@
                         if (dist <= (u.targetEntity.size/2) + 1.3) {
                             u.timer += u.count;
                             if(u.timer >= 15) {
-                                u.timer = 0; u.targetEntity.hp += (15 * u.count);
+                                u.timer = 0; u.targetEntity.hp += (15 * u.count); spawnFx(u.x, u.y - 0.5, '🔨', '#fbbf24');
                                 if (u.targetEntity.hp >= u.targetEntity.maxHp) {
                                     u.targetEntity.hp = u.targetEntity.maxHp; u.targetEntity.isBuilt = true;
                                     let nextFound = buildings.find(b => !b.isBuilt && b.team === u.team && Math.hypot(b.gridX - u.targetEntity.gridX, b.gridY - u.targetEntity.gridY) < 3);
-                                    if (nextFound) { u.targetEntity = nextFound; setUnitTarget(u, nextFound.gridX + 0.5, nextFound.gridY + 0.5); } 
+                                    if (nextFound) { u.targetEntity = nextFound; u.path = []; } 
                                     else { u.state = 'idle'; u.targetEntity = null; spawnFx(u.x, u.y - 0.5, '¡Listo!', '#22c55e'); }
                                 }
                             }
-                        } else { setUnitTarget(u, u.targetEntity.gridX + u.targetEntity.size/2, u.targetEntity.gridY + u.targetEntity.size/2); moveUnit(u, true); }
+                        } else { moveUnit(u, true); } // ARREGLO: Quitada la re-asignación de target que rompía el pathfinding
                     }
                 }
                 else if (u.state === 'repairing') {
@@ -606,13 +604,13 @@
                                 u.timer = 0; u.targetEntity.hp += (15 * u.count); spawnFx(u.x, u.y - 0.5, '🔧', '#fbbf24');
                                 if (u.targetEntity.hp >= u.targetEntity.maxHp) { u.targetEntity.hp = u.targetEntity.maxHp; u.state = 'idle'; u.targetEntity = null; spawnFx(u.x, u.y - 0.5, '¡Reparado!', '#22c55e'); }
                             }
-                        } else { setUnitTarget(u, u.targetEntity.gridX + u.targetEntity.size/2, u.targetEntity.gridY + u.targetEntity.size/2); moveUnit(u, true); }
+                        } else { moveUnit(u, true); }
                     }
                 }
                 else if (u.state === 'gathering') {
                     if (!u.targetEntity || u.targetEntity.resources <= 0 || !buildings.includes(u.targetEntity)) {
                         let nextRes = findNearestResource(u.x, u.y, u.targetEntity ? u.targetEntity.type : R_WOOD, 15);
-                        if (nextRes) { u.targetEntity = nextRes; setUnitTarget(u, nextRes.gridX + 0.5, nextRes.gridY + 0.5); } 
+                        if (nextRes) { u.targetEntity = nextRes; u.path = []; } 
                         else { u.state = 'idle'; u.targetEntity = null; }
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX+0.5) - u.x, (u.targetEntity.gridY+0.5) - u.y);
@@ -626,7 +624,7 @@
                                 spawnFx(u.x, u.y - 0.5, `+${amt}`, '#4ade80');
                                 if (u.targetEntity.resources <= 0) { let idx = buildings.indexOf(u.targetEntity); if(idx > -1) buildings.splice(idx, 1); }
                             }
-                        } else { setUnitTarget(u, u.targetEntity.gridX + 0.5, u.targetEntity.gridY + 0.5); moveUnit(u, true); }
+                        } else { moveUnit(u, true); }
                     }
                 } 
                 else if (u.state === 'attacking') {
@@ -641,7 +639,7 @@
                             if(u.timer >= 60) {
                                 u.timer = 0; let dmg = STATS[u.type].atk * u.count; u.targetEntity.hp -= dmg; u.targetEntity.hitFlash = 10; spawnFx(tx, ty, `-${dmg}`, '#ef4444');
                             }
-                        } else { setUnitTarget(u, tx, ty); moveUnit(u, true); }
+                        } else { moveUnit(u, true); }
                     }
                 }
 
@@ -691,10 +689,17 @@
         function setUnitTarget(u, tx, ty) { u.targetX = tx; u.targetY = ty; u.path = findPath(u.x, u.y, tx, ty, u.team); }
 
         function moveUnit(u, pursuing = false) {
+            // ARREGLO: Solo actualizar objetivo dinámicamente si es necesario, sin reiniciar la ruta completa todo el tiempo
+            if (['gathering', 'building', 'repairing', 'attacking'].includes(u.state) && u.targetEntity) {
+                u.targetX = u.targetEntity.x !== undefined ? u.targetEntity.x : u.targetEntity.gridX + u.targetEntity.size/2;
+                u.targetY = u.targetEntity.y !== undefined ? u.targetEntity.y : u.targetEntity.gridY + u.targetEntity.size/2;
+            }
+
             if (!u.path || u.path.length === 0) {
                 u.path = findPath(u.x, u.y, u.targetX, u.targetY, u.team);
                 if (!u.path || u.path.length === 0) { if(!pursuing) { u.state = 'idle'; } return; }
             }
+            
             let nextNode = u.path[0]; let dx = nextNode.x - u.x; let dy = nextNode.y - u.y;
             let dist = Math.hypot(dx, dy); let speed = STATS[u.type].speed;
 
