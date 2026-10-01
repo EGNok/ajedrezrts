@@ -312,15 +312,17 @@
                 }
             }
 
-            let margin = 10;
-            let pBaseX = Math.floor(seededRandom() * (MAP_W - margin*2)) + margin;
-            let pBaseY = Math.floor(seededRandom() * (MAP_H - margin*2)) + margin;
-            let eBaseX, eBaseY, distToPlayer;
-            do {
-                eBaseX = Math.floor(seededRandom() * (MAP_W - margin*2)) + margin;
-                eBaseY = Math.floor(seededRandom() * (MAP_H - margin*2)) + margin;
-                distToPlayer = Math.hypot(pBaseX - eBaseX, pBaseY - eBaseY);
-            } while (distToPlayer < 40);
+            let margin = 8;
+            let pBaseX = margin + Math.floor(seededRandom() * 10);
+            let pBaseY = margin + Math.floor(seededRandom() * 10);
+            
+            let eBaseX = (MAP_W - margin - 10) - Math.floor(seededRandom() * 10);
+            let eBaseY = (MAP_H - margin - 10) - Math.floor(seededRandom() * 10);
+            
+            // Elegir esquinas al azar (Arriba-Izquierda vs Abajo-Derecha, o viceversa)
+            if (seededRandom() > 0.5) {
+                let temp = pBaseX; pBaseX = eBaseX; eBaseX = temp;
+            }
 
             buildings = buildings.filter(b => Math.hypot(b.gridX - pBaseX, b.gridY - pBaseY) > 8 && Math.hypot(b.gridX - eBaseX, b.gridY - eBaseY) > 8 || (b.type !== R_WOOD && b.type !== R_GOLD && b.type !== R_FOOD));
 
