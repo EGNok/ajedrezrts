@@ -119,7 +119,7 @@
         let gameStatus = 'lobby'; 
         let actionQueue = []; 
         let simulationInterval = null;
-        let gameTick = 0; // Lockstep Engine Tick
+        let gameTick = 0;
 
         const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getContext('2d');
         const minimap = document.getElementById('minimapCanvas'); const mCtx = minimap.getContext('2d');
@@ -142,7 +142,7 @@
         let units = []; let buildings = []; let fxList = []; 
         let selection = null; let pendingAction = null; let actionTargetData = null; 
 
-        // Definiciones
+        // Definiciones (Nombres de Ajedrez integrados)
         const U_VILLAGER = 'villager', U_INFANTRY = 'infantry', U_ARCHER = 'archer', U_CAVALRY = 'cavalry', U_EXPLORER = 'explorer';
         const B_TOWN_CENTER = 'tc', B_HOUSE = 'house', B_BARRACKS = 'barracks', B_ARCHERY = 'archery', B_STABLE = 'stable', B_TOWER = 'tower', B_WALL = 'wall', B_GATE = 'gate';
         const R_WOOD = 'wood', R_GOLD = 'gold', R_FOOD = 'food';
@@ -161,7 +161,6 @@
             [U_EXPLORER]: { hp: 35, atk: 4, range: 1.2, speed: 0.1,  trainTime: 200 }
         };
 
-        /* Semilla Aleatoria Segura para que mapas coincidan al 100% */
         let _seed = 12345;
         function setSeed(s) { _seed = s; }
         function seededRandom() {
@@ -169,13 +168,11 @@
             t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61);
             return ((t ^ t >>> 14) >>> 0) / 4294967296;
         }
-        
         function generateId() {
             let r1 = seededRandom(); let r2 = seededRandom();
             return Math.floor(r1 * 1000000000).toString(36) + r2.toString(36).substring(2, 5);
         }
 
-        // Carga de Sprites Personalizables (Opcional)
         const SPRITE_FILES = {
             'bg_grass_light': 'bg_grass_light.png', 'bg_grass_dark': 'bg_grass_dark.png',
             'res_wood': 'res_wood.png', 'res_gold': 'res_gold.png', 'res_food': 'res_food.png',
@@ -191,7 +188,8 @@
 
         function initPeer() {
             try {
-                peer = new Peer();
+                // Configuramos STUN servers para garantizar conexión si hay Firewall
+                peer = new Peer({ config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } });
                 peer.on('open', (id) => {
                     myPeerId = id;
                     document.getElementById('peer-status').innerText = "Conectado. Red P2P lista.";
@@ -199,20 +197,22 @@
                     document.getElementById('btn-join-ui').disabled = false; document.getElementById('btn-join-ui').classList.remove('opacity-50', 'cursor-not-allowed');
                 });
                 peer.on('connection', (conn) => {
-                    peerConn = conn; setupConnection();
-                    let gameSeed = Math.floor(Math.random() * 9999999);
-                    setTimeout(() => {
+                    peerConn = conn;
+                    // FIX: El host ESPERA a que la conexión sea sólida antes de enviar datos
+                    peerConn.on('open', () => { 
+                        setupConnection();
+                        let gameSeed = Math.floor(Math.random() * 9999999);
                         sendData({ type: 'START', seed: gameSeed });
                         startGame(gameSeed, 1);
-                    }, 1000);
+                    });
                 });
                 peer.on('error', (err) => {
                     console.warn("PeerJS Warning:", err);
-                    document.getElementById('peer-status').innerText = "Fallo en red. Juega Modo Solo 🤖";
+                    document.getElementById('peer-status').innerText = "Error de red. Juega Modo Solo 🤖";
                     document.getElementById('btn-singleplayer').classList.add('animate-bounce');
                 });
             } catch(e) {
-                document.getElementById('peer-status').innerText = "Usa el Modo Solo 🤖";
+                document.getElementById('peer-status').innerText = "Error. Usa el Modo Solo 🤖";
             }
         }
 
@@ -220,7 +220,7 @@
             playerName = document.getElementById('player-name').value.trim() || "Host"; myTeam = 1;
             document.getElementById('setup-section').classList.add('hidden');
             document.getElementById('host-section').classList.remove('hidden'); document.getElementById('host-section').classList.add('flex');
-            document.getElementById('room-code').innerText = myPeerId || "LOCAL_ROOM";
+            document.getElementById('room-code').innerText = myPeerId || "Error_Generando_ID";
         });
 
         document.getElementById('btn-join-ui').addEventListener('click', () => {
@@ -232,8 +232,13 @@
         document.getElementById('btn-join-connect').addEventListener('click', () => {
             let code = document.getElementById('join-code').value.trim(); if (!code) return;
             document.getElementById('btn-join-connect').innerText = "Conectando...";
-            peerConn = peer.connect(code);
-            peerConn.on('open', () => { setupConnection(); document.getElementById('btn-join-connect').innerText = "¡Conectado! Esperando..."; });
+            // FIX: Parámetro reliable: true
+            peerConn = peer.connect(code, { reliable: true });
+            peerConn.on('open', () => { 
+                setupConnection(); 
+                document.getElementById('btn-join-connect').innerText = "¡Conectado! Esperando..."; 
+            });
+            peerConn.on('error', () => { document.getElementById('btn-join-connect').innerText = "Fallo al conectar"; });
         });
 
         document.getElementById('btn-singleplayer').addEventListener('click', () => {
@@ -246,7 +251,6 @@
                 if (data.type === 'START') {
                     if (myTeam === 2) startGame(data.seed, 2);
                 } else {
-                    // Lockstep: Si el comando llegó "tarde", obligarlo a procesarse ahora
                     if (data.tick <= gameTick) data.tick = gameTick + 1;
                     actionQueue.push(data);
                 }
@@ -256,6 +260,8 @@
         function sendData(dataObj) { if (peerConn && peerConn.open) peerConn.send(dataObj); }
         document.getElementById('btn-cancel-host').addEventListener('click', () => location.reload());
         document.getElementById('btn-cancel-join').addEventListener('click', () => location.reload());
+        
+        // El motor arranca el peer al cargar la ventana
         window.onload = initPeer;
 
         function startGame(mapSeed, assignedTeam) {
@@ -273,8 +279,7 @@
         }
 
         function sendCmd(cmdObj) {
-            // Se ejecuta en el futuro (15 ticks = 500ms) para garantizar sincronía
-            cmdObj.tick = gameTick + 15; 
+            cmdObj.tick = gameTick + 15; // Retraso de 400ms para asegurar sincronía perfecta en Lockstep
             cmdObj.team = myTeam;
             actionQueue.push(cmdObj);
             if (!isSinglePlayer) sendData(cmdObj);
@@ -287,30 +292,15 @@
                 for (let y = 0; y < MAP_H; y++) { mapGrid[x][y] = 1; fogGrid[x][y] = 0; }
             }
 
-            let cX = Math.floor(MAP_W/2), cY = Math.floor(MAP_H/2);
-            for (let x = 0; x < MAP_W; x++) {
-                for (let y = 0; y < MAP_H; y++) {
-                    let noise = Math.sin(x*0.2) + Math.cos(y*0.2) + Math.sin((x+y)*0.1);
-                    if (noise > 0.6 && Math.hypot(x-cX, y-cY) > 5) {
-                        createBuilding(R_WOOD, x, y, 1, 0, true);
-                    }
-                }
-            }
-
-            // Esquinas Opuestas Seguras (Top-Left vs Bottom-Right)
-            let margin = 10;
+            let margin = 8;
             let pBaseX = margin + Math.floor(seededRandom() * 5);
             let pBaseY = margin + Math.floor(seededRandom() * 5);
-            
+            // FIX: Esquinas opuestas aseguradas para evitar infinite loop
             let eBaseX = (MAP_W - margin - 5) - Math.floor(seededRandom() * 5);
             let eBaseY = (MAP_H - margin - 5) - Math.floor(seededRandom() * 5);
             
             if (seededRandom() > 0.5) { let temp = pBaseX; pBaseX = eBaseX; eBaseX = temp; }
 
-            // Limpiar área de inicio
-            buildings = buildings.filter(b => Math.hypot(b.gridX - pBaseX, b.gridY - pBaseY) > 8 && Math.hypot(b.gridX - eBaseX, b.gridY - eBaseY) > 8 || (b.type !== R_WOOD && b.type !== R_GOLD && b.type !== R_FOOD));
-
-            // Generar Bases
             createBuilding(B_TOWN_CENTER, pBaseX, pBaseY, 2, 1, true);
             createUnit(U_VILLAGER, pBaseX + 3, pBaseY, 1, 1);
             createUnit(U_VILLAGER, pBaseX, pBaseY - 2, 1, 1);
@@ -326,6 +316,18 @@
                 if (!isOccupied(rx, ry, 1)) createBuilding(seededRandom() > 0.4 ? R_FOOD : R_GOLD, rx, ry, 1, 0, true);
             }
             
+            let cX = Math.floor(MAP_W/2), cY = Math.floor(MAP_H/2);
+            for (let x = 0; x < MAP_W; x++) {
+                for (let y = 0; y < MAP_H; y++) {
+                    let noise = Math.sin(x*0.2) + Math.cos(y*0.2) + Math.sin((x+y)*0.1);
+                    if (noise > 0.6 && Math.hypot(x-cX, y-cY) > 5) {
+                        if (Math.hypot(x-pBaseX, y-pBaseY) > 8 && Math.hypot(x-eBaseX, y-eBaseY) > 8) {
+                            createBuilding(R_WOOD, x, y, 1, 0, true);
+                        }
+                    }
+                }
+            }
+
             let myBase = myTeam === 1 ? {x: pBaseX, y: pBaseY} : {x: eBaseX, y: eBaseY};
             cam.x = (myBase.x * TILE_SIZE) - (window.innerWidth / 2); cam.y = (myBase.y * TILE_SIZE) - (window.innerHeight / 2);
             updateFog();
@@ -361,11 +363,48 @@
             buildings.push(b); return b;
         }
 
+        function findPath(startX, startY, endX, endY, team, ignoreBuildingId = null, maxSteps = 400) {
+            let sx = Math.floor(startX), sy = Math.floor(startY), ex = Math.floor(endX), ey = Math.floor(endY);
+            if (sx === ex && sy === ey) return []; 
+            let openSet = [{x: sx, y: sy, g: 0, f: Math.hypot(ex-sx, ey-sy), parent: null}]; let closedSet = new Set();
+            let grid = new Array(MAP_W).fill(0).map(() => new Array(MAP_H).fill(0));
+            
+            for (let b of buildings) {
+                let solid = true; if (b.id === ignoreBuildingId) solid = false;
+                if (b.type === B_GATE && b.team === team && b.isBuilt) solid = false;
+                if (solid) { for(let bx=b.gridX; bx<b.gridX+b.size; bx++) { for(let by=b.gridY; by<b.gridY+b.size; by++) { if(bx>=0 && bx<MAP_W && by>=0 && by<MAP_H) grid[bx][by] = 1; } } }
+            }
+            let steps = 0, dirs = [[0,-1], [1,0], [0,1], [-1,0]];
+            
+            while(openSet.length > 0 && steps++ < maxSteps) {
+                openSet.sort((a,b) => a.f - b.f); let curr = openSet.shift();
+                if (curr.x === ex && curr.y === ey) { let path = []; while(curr.parent) { path.push({x: curr.x + 0.5, y: curr.y + 0.5}); curr = curr.parent; } return path.reverse(); }
+                closedSet.add(`${curr.x},${curr.y}`);
+                for (let d of dirs) {
+                    let nx = curr.x + d[0], ny = curr.y + d[1];
+                    if (nx<0 || ny<0 || nx>=MAP_W || ny>=MAP_H || closedSet.has(`${nx},${ny}`)) continue;
+                    let isSolid = grid[nx][ny] === 1 && !(nx === ex && ny === ey); if (isSolid) continue;
+                    let g = curr.g + 1; let neighbor = openSet.find(n => n.x === nx && n.y === ny);
+                    if (!neighbor) { openSet.push({x: nx, y: ny, g: g, f: g + Math.hypot(ex-nx, ey-ny), parent: curr}); } 
+                    else if (g < neighbor.g) { neighbor.g = g; neighbor.f = g + Math.hypot(ex-nx, ey-ny); neighbor.parent = curr; }
+                }
+            } return null;
+        }
+
+        function forceGridSnap(u) { u.x = Math.floor(u.x) + 0.5; u.y = Math.floor(u.y) + 0.5; }
+
+        function setUnitTarget(u, tx, ty, ignoreBuildingId = null) {
+            if (!u.path || u.path.length === 0 || u.targetX !== tx || u.targetY !== ty) {
+                u.targetX = tx; u.targetY = ty;
+                u.path = findPath(u.x, u.y, tx, ty, u.team, ignoreBuildingId);
+            }
+        }
+
         function processAction(act) {
             let uids = act.uids || []; let unitsToCommand = units.filter(u => uids.includes(u.id));
 
             if (act.type === 'MOVE') {
-                unitsToCommand.forEach(u => { u.targetX = act.tx; u.targetY = act.ty; u.targetEntity = null; u.state = 'moving'; u.path = []; });
+                unitsToCommand.forEach(u => { u.targetEntity = null; u.state = 'moving'; setUnitTarget(u, act.tx, act.ty); });
             } else if (act.type === 'ATTACK') {
                 let target = units.find(u => u.id === act.targetId) || buildings.find(b => b.id === act.targetId);
                 unitsToCommand.forEach(u => { if (target) { u.targetEntity = target; u.state = 'attacking'; u.path = []; } });
@@ -378,7 +417,7 @@
             } else if (act.type === 'BUILD_PLACE') {
                 let newB = createBuilding(act.bType, act.gx, act.gy, act.size, act.team, false, act.buildingId);
                 let u = units.find(unit => unit.id === act.uid);
-                if (u && act.bType !== B_WALL && act.bType !== B_GATE) { u.targetEntity = newB; u.state = 'building'; u.path = []; setUnitTarget(u, act.gx + 0.5, act.gy + 0.5, newB.id); }
+                if (u && act.bType !== B_WALL && act.bType !== B_GATE) { u.targetEntity = newB; u.state = 'building'; u.path = []; setUnitTarget(u, act.gx + newB.size/2, act.gy + newB.size/2, newB.id); }
             } else if (act.type === 'BUILD_WALL_LINE') {
                 let firstB = null;
                 act.points.forEach((p, idx) => { let newB = createBuilding(act.bType, p.x, p.y, 1, act.team, false, act.buildingIds[idx]); if (!firstB) firstB = newB; });
@@ -409,17 +448,39 @@
             }
         }
 
+        function moveUnit(u, pursuing = false) {
+            if (!u.path || u.path.length === 0) { if(!pursuing) { u.state = 'idle'; forceGridSnap(u); } return; }
+            let nextNode = u.path[0]; let dx = nextNode.x - u.x; let dy = nextNode.y - u.y;
+            let dist = Math.hypot(dx, dy); let speed = STATS[u.type].speed;
+
+            if (['gathering', 'building', 'repairing', 'attacking'].includes(u.state) && u.targetEntity) {
+                let tx = u.targetEntity.x !== undefined ? u.targetEntity.x : u.targetEntity.gridX + u.targetEntity.size/2;
+                let ty = u.targetEntity.y !== undefined ? u.targetEntity.y : u.targetEntity.gridY + u.targetEntity.size/2;
+                let finalDist = Math.hypot(tx - u.x, ty - u.y);
+                // FIX: Ajuste matemático de choque para diagonales
+                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + 0.5) : (u.targetEntity.size > 1 ? 2.4 : 1.6);
+                if (finalDist <= reqDist) { u.path = []; forceGridSnap(u); return; }
+            }
+
+            if (dist > speed) { u.x += (dx / dist) * speed; u.y += (dy / dist) * speed; } 
+            else {
+                u.x = nextNode.x; u.y = nextNode.y; u.path.shift();
+                if (u.path.length === 0 && !pursuing && !['gathering', 'building', 'repairing', 'merging'].includes(u.state)) {
+                    u.state = 'idle'; forceGridSnap(u);
+                }
+            }
+        }
+
         function simulationUpdate() {
             if (gameStatus !== 'playing') return;
             gameTick++;
 
-            // Ejecuta acciones cuyo tick programado ya llegó o pasó
             actionQueue.sort((a, b) => a.tick - b.tick);
             while(actionQueue.length > 0 && actionQueue[0].tick <= gameTick) {
                 processAction(actionQueue.shift());
             }
 
-            if (gameTick % 10 === 0) updateFog(); // Solo actualiza niebla cada 10 frames
+            if (gameTick % 10 === 0) updateFog(); 
             for (let i = fxList.length - 1; i >= 0; i--) { fxList[i].life--; fxList[i].y -= 0.02; if (fxList[i].life <= 0) fxList.splice(i, 1); }
 
             let tc1Alive = false, tc2Alive = false;
@@ -452,7 +513,7 @@
                 gameStatus = 'gameover'; let winner = tc1Alive ? 1 : 2; let title = document.getElementById('gameover-title');
                 if (winner === myTeam) {
                     title.innerText = "¡VICTORIA!"; title.className = "text-5xl font-extrabold text-emerald-400 drop-shadow-lg uppercase tracking-wider";
-                    document.getElementById('gameover-desc').innerText = "Destruiste el Centro Urbano enemigo.";
+                    document.getElementById('gameover-desc').innerText = "Destruiste la Casa Principal enemiga.";
                 } else {
                     title.innerText = "¡DERROTA!"; title.className = "text-5xl font-extrabold text-red-500 drop-shadow-lg uppercase tracking-wider";
                     document.getElementById('gameover-desc').innerText = "Tu imperio ha caído.";
@@ -482,7 +543,8 @@
                         u.state = 'idle'; u.targetEntity = null; forceGridSnap(u);
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX + u.targetEntity.size/2) - u.x, (u.targetEntity.gridY + u.targetEntity.size/2) - u.y);
-                        if (dist <= 1.4) {
+                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.6;
+                        if (dist <= allowed) {
                             forceGridSnap(u); u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
                             if(u.timer >= (u.state==='building'?15:30)) {
                                 u.timer = 0; u.targetEntity.hp += (15 * u.count); spawnFx(u.x, u.y - 0.5, u.state==='building'?'🔨':'🔧', '#fbbf24');
@@ -500,7 +562,7 @@
                         else { u.state = 'idle'; u.targetEntity = null; forceGridSnap(u); }
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX+0.5) - u.x, (u.targetEntity.gridY+0.5) - u.y);
-                        if (dist <= 1.4) { // Sync to stop logic
+                        if (dist <= 1.6) { // FIX: Sincronizado para frenado en diagonales
                             forceGridSnap(u); u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
                             if (u.timer >= 60) {
                                 u.timer = 0; let amt = u.count; u.targetEntity.resources -= amt;
@@ -536,67 +598,6 @@
             if (gameTick % 10 === 0) updateUI();
         }
 
-        function forceGridSnap(u) { u.x = Math.floor(u.x) + 0.5; u.y = Math.floor(u.y) + 0.5; }
-
-        function findPath(startX, startY, endX, endY, team, ignoreBuildingId = null, maxSteps = 400) {
-            let sx = Math.floor(startX), sy = Math.floor(startY), ex = Math.floor(endX), ey = Math.floor(endY);
-            if (sx === ex && sy === ey) return []; 
-            let openSet = [{x: sx, y: sy, g: 0, f: Math.hypot(ex-sx, ey-sy), parent: null}]; let closedSet = new Set();
-            let grid = new Array(MAP_W).fill(0).map(() => new Array(MAP_H).fill(0));
-            
-            for (let b of buildings) {
-                let solid = true; if (b.id === ignoreBuildingId) solid = false;
-                if (b.type === B_GATE && b.team === team && b.isBuilt) solid = false; // Puertas aliadas
-                if (solid) { for(let bx=b.gridX; bx<b.gridX+b.size; bx++) { for(let by=b.gridY; by<b.gridY+b.size; by++) { if(bx>=0 && bx<MAP_W && by>=0 && by<MAP_H) grid[bx][by] = 1; } } }
-            }
-            let steps = 0, dirs = [[0,-1], [1,0], [0,1], [-1,0]];
-            
-            while(openSet.length > 0 && steps++ < maxSteps) {
-                openSet.sort((a,b) => a.f - b.f); let curr = openSet.shift();
-                if (curr.x === ex && curr.y === ey) { let path = []; while(curr.parent) { path.push({x: curr.x + 0.5, y: curr.y + 0.5}); curr = curr.parent; } return path.reverse(); }
-                closedSet.add(`${curr.x},${curr.y}`);
-                for (let d of dirs) {
-                    let nx = curr.x + d[0], ny = curr.y + d[1];
-                    if (nx<0 || ny<0 || nx>=MAP_W || ny>=MAP_H || closedSet.has(`${nx},${ny}`)) continue;
-                    let isSolid = grid[nx][ny] === 1 && !(nx === ex && ny === ey); if (isSolid) continue;
-                    let g = curr.g + 1; let neighbor = openSet.find(n => n.x === nx && n.y === ny);
-                    if (!neighbor) { openSet.push({x: nx, y: ny, g: g, f: g + Math.hypot(ex-nx, ey-ny), parent: curr}); } 
-                    else if (g < neighbor.g) { neighbor.g = g; neighbor.f = g + Math.hypot(ex-nx, ey-ny); neighbor.parent = curr; }
-                }
-            } return null;
-        }
-
-        function setUnitTarget(u, tx, ty, ignoreBuildingId = null) {
-            // Solo recalcula ruta si el destino cambia para no saturar memoria
-            if (!u.path || u.path.length === 0 || u.targetX !== tx || u.targetY !== ty) {
-                u.targetX = tx; u.targetY = ty;
-                u.path = findPath(u.x, u.y, tx, ty, u.team, ignoreBuildingId);
-            }
-        }
-
-        function moveUnit(u, pursuing = false) {
-            if (!u.path || u.path.length === 0) { if(!pursuing) { u.state = 'idle'; forceGridSnap(u); } return; }
-            
-            let nextNode = u.path[0]; let dx = nextNode.x - u.x; let dy = nextNode.y - u.y;
-            let dist = Math.hypot(dx, dy); let speed = STATS[u.type].speed;
-
-            if (['gathering', 'building', 'repairing', 'attacking'].includes(u.state) && u.targetEntity) {
-                let tx = u.targetEntity.x !== undefined ? u.targetEntity.x : u.targetEntity.gridX + u.targetEntity.size/2;
-                let ty = u.targetEntity.y !== undefined ? u.targetEntity.y : u.targetEntity.gridY + u.targetEntity.size/2;
-                let finalDist = Math.hypot(tx - u.x, ty - u.y);
-                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + 0.5) : 1.3; // Distancia límite solidos
-                if (finalDist <= reqDist) { u.path = []; forceGridSnap(u); return; }
-            }
-
-            if (dist > speed) { u.x += (dx / dist) * speed; u.y += (dy / dist) * speed; } 
-            else {
-                u.x = nextNode.x; u.y = nextNode.y; u.path.shift();
-                if (u.path.length === 0 && !pursuing && !['gathering', 'building', 'repairing'].includes(u.state)) {
-                    u.state = 'idle'; forceGridSnap(u);
-                }
-            }
-        }
-
         function findNearestEnemy(entity, maxDist) {
             let ex = entity.x !== undefined ? entity.x : entity.gridX + entity.size/2; let ey = entity.y !== undefined ? entity.y : entity.gridY + entity.size/2;
             let bestDist = maxDist, bestTarget = null;
@@ -615,7 +616,13 @@
             const reveal = (cx, cy, radius) => {
                 let sX = Math.max(0, Math.floor(cx - radius)), eX = Math.min(MAP_W - 1, Math.ceil(cx + radius));
                 let sY = Math.max(0, Math.floor(cy - radius)), eY = Math.min(MAP_H - 1, Math.ceil(cy + radius));
-                for (let x = sX; x <= eX; x++) for (let y = sY; y <= eY; y++) if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= radius) fogGrid[x][y] = 2;
+                for (let x = sX; x <= eX; x++) {
+                    for (let y = sY; y <= eY; y++) {
+                        if (Math.hypot(x + 0.5 - cx, y + 0.5 - cy) <= radius) {
+                            if(fogGrid[x] && fogGrid[x][y] !== undefined) fogGrid[x][y] = 2;
+                        }
+                    }
+                }
             };
             for (let u of units) if (u.team === myTeam) reveal(u.x, u.y, u.type === U_EXPLORER ? 7 : 5);
             for (let b of buildings) if (b.team === myTeam && b.isBuilt) reveal(b.gridX + b.size/2, b.gridY + b.size/2, b.size + 4);
@@ -657,11 +664,11 @@
             b.className = `btn-action flex flex-col items-center justify-center p-1 sm:p-2 rounded-lg sm:rounded-xl border border-white/50 flex-shrink-0 shadow-sm transition-transform active:scale-95 ${enabled ? 'bg-[#3b82f6] text-white hover:bg-blue-600' : 'bg-slate-400 text-slate-600 cursor-not-allowed opacity-60'}`;
             b.innerHTML = `<span class="text-xl sm:text-2xl mb-0.5 sm:mb-1">${icon}</span><span class="text-[9px] sm:text-[10px] font-bold leading-none text-center">${text}</span><span class="text-[8px] sm:text-[9px] font-mono mt-auto">${costStr}</span>`;
             if(enabled) {
-                // onpointerdown blinda el toque para que no se filtre al mapa del fondo
                 b.onpointerdown = (e) => { 
                     e.preventDefault(); e.stopPropagation(); 
-                    onclick(); 
-                    setTimeout(() => { updateUI(); openActionMenu(selection ? units.find(u=>u.id===selection.id) || buildings.find(b=>b.id===selection.id) : null); }, 50); 
+                    if(onclick()) {
+                        setTimeout(() => { updateUI(); openActionMenu(selection ? units.find(u=>u.id===selection.id) || buildings.find(b=>b.id===selection.id) : null); }, 50);
+                    }
                 };
             }
             actionContainer.appendChild(b);
@@ -672,30 +679,29 @@
             if (!entity) { actionContainer.classList.add('hidden'); return; }
             actionContainer.classList.remove('hidden'); let hasActions = true;
 
-            if (entity.isBuilt === false) { addBtn('❌', 'Cerrar', '', () => clearSelection(), true); return; }
+            if (entity.isBuilt === false) { addBtn('❌', 'Cerrar', '', () => { clearSelection(); return true; }, true); return; }
 
             if (entity.type === B_TOWN_CENTER && entity.team === myTeam) {
-                // Bug fix: Town Center solo hace Peones (Aldeanos)
-                addBtn('🧑‍🌾', 'Peón', '50🍖', () => { if (canAfford(COSTS[U_VILLAGER], myTeam) && checkPop(myTeam)) sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_VILLAGER, newUnitId: generateId()}); }, canAfford(COSTS[U_VILLAGER], myTeam) && checkPop(myTeam));
+                addBtn('🧑‍🌾', 'Peón', '50🍖', () => { if (canAfford(COSTS[U_VILLAGER], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_VILLAGER, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_VILLAGER], myTeam) && checkPop(myTeam));
             } else if (entity.type === B_BARRACKS && entity.team === myTeam) {
-                addBtn('⚔️', 'Guerrero', '60🍖 20🪙', () => { if (canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam)) sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_INFANTRY, newUnitId: generateId()}); }, canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam));
+                addBtn('⚔️', 'Guerrero', '60🍖 20🪙', () => { if (canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_INFANTRY, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam));
             } else if (entity.type === B_ARCHERY && entity.team === myTeam) {
-                addBtn('🏹', 'Alfil', '25🪵 45🪙', () => { if (canAfford(COSTS[U_ARCHER], myTeam) && checkPop(myTeam)) sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_ARCHER, newUnitId: generateId()}); }, canAfford(COSTS[U_ARCHER], myTeam) && checkPop(myTeam));
+                addBtn('🎯', 'Alfil', '25🪵 45🪙', () => { if (canAfford(COSTS[U_ARCHER], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_ARCHER, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_ARCHER], myTeam) && checkPop(myTeam));
             } else if (entity.type === B_STABLE && entity.team === myTeam) {
-                addBtn('♞', 'Caballero', '80🍖 40🪙', () => { if (canAfford(COSTS[U_CAVALRY], myTeam) && checkPop(myTeam)) sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_CAVALRY, newUnitId: generateId()}); }, canAfford(COSTS[U_CAVALRY], myTeam) && checkPop(myTeam));
+                addBtn('♞', 'Caballero', '80🍖 40🪙', () => { if (canAfford(COSTS[U_CAVALRY], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_CAVALRY, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_CAVALRY], myTeam) && checkPop(myTeam));
             } else if (entity.type === U_VILLAGER && entity.team === myTeam) {
                 let builds = [ { t: B_HOUSE, n: 'Casa', i: '🏠', c: '25🪵', s: 1 }, { t: B_BARRACKS, n: 'Cuartel', i: '⛺', c: '150🪵', s: 2 }, { t: B_ARCHERY, n: 'Arquería', i: '🎯', c: '150🪵', s: 2 }, { t: B_STABLE, n: 'Establo', i: '🐴', c: '150🪵 50🪙', s: 2 }, { t: B_TOWER, n: 'Torre', i: '🗼', c: '50🪵 50🪙', s: 1 }, { t: B_GATE, n: 'Puerta', i: '⛩️', c: '20🪵', s: 1 } ];
-                builds.forEach(b => { addBtn(b.i, b.n, b.c, () => { pendingAction = 'build'; actionTargetData = b; setMsg(`Toca para ${b.n}`); }, canAfford(COSTS[b.t], myTeam)); });
-                addBtn('🧱', 'Muro', '10🪵', () => { pendingAction = 'build_wall'; setMsg(`Arrastra para muro`); }, canAfford(COSTS[B_WALL], myTeam));
+                builds.forEach(b => { addBtn(b.i, b.n, b.c, () => { pendingAction = 'build'; actionTargetData = b; setMsg(`Toca para ${b.n}`); return true; }, canAfford(COSTS[b.t], myTeam)); });
+                addBtn('🧱', 'Muro', '10🪵', () => { pendingAction = 'build_wall'; setMsg(`Arrastra para muro`); return true; }, canAfford(COSTS[B_WALL], myTeam));
             } else { hasActions = false; actionContainer.classList.add('hidden'); }
 
-            // Unir y Dividir SOLO en Unidades
-            if (units.includes(entity) && entity.team === myTeam) {
+            // FIX: Validar correctamente si es una unidad para Dividir y Unir (Los edificios no se unen)
+            if (units.some(u => u.id === entity.id) && entity.team === myTeam) {
                 hasActions = true; actionContainer.classList.remove('hidden');
-                addBtn('🔗', 'Unir', '', () => { pendingAction = 'merge'; setMsg('Toca tropa igual aliada'); }, true);
-                if (entity.count > 1) { addBtn('➗', 'Dividir', '', () => { sendCmd({type: 'DIVIDE', uid: entity.id, newUnitId: generateId()}); clearSelection(); }, true); }
+                addBtn('🔗', 'Unir', '', () => { pendingAction = 'merge'; setMsg('Toca tropa igual aliada'); return true; }, true);
+                if (entity.count > 1) { addBtn('➗', 'Dividir', '', () => { sendCmd({type: 'DIVIDE', uid: entity.id, newUnitId: generateId()}); clearSelection(); return true; }, true); }
             }
-            if (hasActions) addBtn('❌', 'Cerrar', '', () => clearSelection(), true);
+            if (hasActions) addBtn('❌', 'Cerrar', '', () => { clearSelection(); return true; }, true);
         }
         function clearSelection() { selection = null; pendingAction = null; actionTargetData = null; actionContainer.classList.add('hidden'); setMsg('Seleccionado: Nada'); setTimeout(hideMsg, 2000); }
 
@@ -720,7 +726,8 @@
             }
             if (isDrawingWall || !isDragging) return;
             let dx = (e.clientX - dragStart.x) / renderScale, dy = (e.clientY - dragStart.y) / renderScale;
-            if (Math.hypot(dx, dy) > 8) hasMovedDrag = true; 
+            // FIX: Aumentamos la tolerancia a 20 pixeles para evitar cancelaciones accidentales al hacer click.
+            if (Math.hypot(dx, dy) > 20) hasMovedDrag = true; 
             if (hasMovedDrag) { cam.x = Math.max(0, Math.min(camStart.x - dx, MAP_W * TILE_SIZE - (window.innerWidth / renderScale))); cam.y = Math.max(0, Math.min(camStart.y - dy, MAP_H * TILE_SIZE - (window.innerHeight / renderScale))); }
         });
 
@@ -742,7 +749,6 @@
             if (pendingAction === 'build' && actionTargetData) {
                 if (fogGrid[gx] && fogGrid[gx][gy] === 0) { setMsg('Zona inexplorada'); setTimeout(hideMsg, 2000); return; }
                 if (!isOccupied(gx, gy, actionTargetData.s) && canAfford(COSTS[actionTargetData.t], myTeam)) {
-                    pay(COSTS[actionTargetData.t], myTeam);
                     sendCmd({type: 'BUILD_PLACE', bType: actionTargetData.t, gx: gx, gy: gy, size: actionTargetData.s, uid: selection?selection.id:null, buildingId: generateId()});
                 } else { setMsg('No se puede construir aquí'); setTimeout(hideMsg, 2000); }
                 pendingAction = null; actionTargetData = null; clearSelection(); return;
@@ -750,16 +756,15 @@
 
             if (pendingAction === 'merge') {
                 let u = units.find(unit => selection && unit.id === selection.id);
-                // Hitbox más generoso para táctil
-                let ct = units.find(unit => Math.hypot(unit.x - wX, unit.y - wY) <= 1.2 && fogGrid[Math.floor(unit.x)][Math.floor(unit.y)] >= 1);
+                let ct = units.find(unit => Math.hypot(unit.x - wX, unit.y - wY) <= 1.2 && fogGrid[Math.floor(unit.x)] && fogGrid[Math.floor(unit.x)][Math.floor(unit.y)] >= 1);
                 if (u && ct && ct.team === myTeam && ct.id !== u.id && ct.type === u.type) {
                     sendCmd({type: 'MERGE', uids: [u.id], targetId: ct.id});
                 }
                 pendingAction = null; clearSelection(); return;
             }
 
-            let clickedUnit = units.find(u => Math.hypot(u.x - wX, u.y - wY) <= 0.8 && fogGrid[Math.floor(u.x)][Math.floor(u.y)] >= 1);
-            let clickedBuilding = buildings.find(b => gx >= b.gridX && gx < b.gridX + b.size && gy >= b.gridY && gy < b.gridY + b.size && fogGrid[b.gridX][b.gridY] >= 1);
+            let clickedUnit = units.find(u => Math.hypot(u.x - wX, u.y - wY) <= 0.8 && fogGrid[Math.floor(u.x)] && fogGrid[Math.floor(u.x)][Math.floor(u.y)] >= 1);
+            let clickedBuilding = buildings.find(b => gx >= b.gridX && gx < b.gridX + b.size && gy >= b.gridY && gy < b.gridY + b.size && fogGrid[b.gridX] && fogGrid[b.gridX][gy] >= 1);
 
             if (clickedUnit && selection && selection.type === 'unit' && selection.id === clickedUnit.id) { clearSelection(); return; }
             if (clickedBuilding && selection && selection.type === 'building' && selection.id === clickedBuilding.id) { clearSelection(); return; }
@@ -873,6 +878,7 @@
                     ctx.fill(); ctx.stroke();
                 });
 
+                // Badge de Tropas
                 ctx.fillStyle = u.team === myTeam ? '#2563eb' : '#b91c1c'; ctx.beginPath(); ctx.arc(drawPx + r*0.7, drawPy - r*0.7, TILE_SIZE * 0.25, 0, Math.PI*2); ctx.fill();
                 ctx.strokeStyle = 'white'; ctx.lineWidth = 1.5; ctx.stroke();
                 ctx.fillStyle = 'white'; ctx.font = `bold ${TILE_SIZE * 0.35}px Inter`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(u.count, drawPx + r*0.7, drawPy - r*0.7);
@@ -893,7 +899,7 @@
             }
             ctx.restore();
 
-            // Minimap (Con Niebla)
+            // Minimapa
             mCtx.fillStyle = '#0f172a'; mCtx.fillRect(0, 0, minimap.width, minimap.height);
             let sX = minimap.width / MAP_W, sY = minimap.height / MAP_H; 
             for (let x = 0; x < MAP_W; x++) for (let y = 0; y < MAP_H; y++) if (fogGrid[x] && fogGrid[x][y] >= 1) if (mapGrid[x][y] === 1) { mCtx.fillStyle = '#3f6212'; mCtx.fillRect(x*sX, y*sY, sX, sY); }
