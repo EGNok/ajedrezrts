@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-    <title>RTS Minimalista - P2P WebRTC</title>
+    <title>RTS P2P - Versión Definitiva</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
     <script src="https://unpkg.com/peerjs@1.5.1/dist/peerjs.min.js"></script>
@@ -59,7 +59,7 @@
                 <h2 class="text-xl font-bold text-slate-700">Sala Creada</h2>
                 <p class="text-sm text-slate-500 text-center">Comparte este código con tu amigo:</p>
                 <div class="bg-slate-800 text-white font-mono text-xl py-2 px-4 rounded-lg tracking-widest cursor-pointer select-all w-full text-center overflow-x-auto" id="room-code">Cargando...</div>
-                <p class="text-sm text-emerald-600 font-semibold animate-pulse mt-2">Esperando rival...</p>
+                <p class="text-sm text-emerald-600 font-semibold animate-pulse mt-2" id="host-wait-msg">Esperando rival...</p>
                 <button id="btn-cancel-host" class="text-red-500 text-sm font-bold mt-2 underline">Cancelar</button>
             </div>
 
@@ -188,7 +188,6 @@
 
         function initPeer() {
             try {
-                // Configuramos STUN servers para garantizar conexión si hay Firewall
                 peer = new Peer({ config: { 'iceServers': [{ 'urls': 'stun:stun.l.google.com:19302' }, { 'urls': 'stun:stun1.l.google.com:19302' }] } });
                 peer.on('open', (id) => {
                     myPeerId = id;
@@ -198,7 +197,8 @@
                 });
                 peer.on('connection', (conn) => {
                     peerConn = conn;
-                    // FIX: El host ESPERA a que la conexión sea sólida antes de enviar datos
+                    document.getElementById('host-wait-msg').innerText = "Rival encontrado. Sincronizando...";
+                    // Esperar activamente a que el túnel de conexión esté 100% abierto antes de mandar el Start.
                     peerConn.on('open', () => { 
                         setupConnection();
                         let gameSeed = Math.floor(Math.random() * 9999999);
@@ -232,11 +232,11 @@
         document.getElementById('btn-join-connect').addEventListener('click', () => {
             let code = document.getElementById('join-code').value.trim(); if (!code) return;
             document.getElementById('btn-join-connect').innerText = "Conectando...";
-            // FIX: Parámetro reliable: true
+            // reliable: true asegura que no se pierdan comandos en el camino (crítico para Lockstep)
             peerConn = peer.connect(code, { reliable: true });
             peerConn.on('open', () => { 
                 setupConnection(); 
-                document.getElementById('btn-join-connect').innerText = "¡Conectado! Esperando..."; 
+                document.getElementById('btn-join-connect').innerText = "¡Conectado! Esperando mapa..."; 
             });
             peerConn.on('error', () => { document.getElementById('btn-join-connect').innerText = "Fallo al conectar"; });
         });
@@ -251,6 +251,7 @@
                 if (data.type === 'START') {
                     if (myTeam === 2) startGame(data.seed, 2);
                 } else {
+                    // Si el paquete llega extremadamente tarde, ejecutamos de inmediato para no congelar.
                     if (data.tick <= gameTick) data.tick = gameTick + 1;
                     actionQueue.push(data);
                 }
@@ -260,8 +261,6 @@
         function sendData(dataObj) { if (peerConn && peerConn.open) peerConn.send(dataObj); }
         document.getElementById('btn-cancel-host').addEventListener('click', () => location.reload());
         document.getElementById('btn-cancel-join').addEventListener('click', () => location.reload());
-        
-        // El motor arranca el peer al cargar la ventana
         window.onload = initPeer;
 
         function startGame(mapSeed, assignedTeam) {
@@ -279,7 +278,8 @@
         }
 
         function sendCmd(cmdObj) {
-            cmdObj.tick = gameTick + 15; // Retraso de 400ms para asegurar sincronía perfecta en Lockstep
+            // Buffer de 12 ticks (~400ms). Es obligatorio para sincronizar P2P sobre internet.
+            cmdObj.tick = gameTick + 12; 
             cmdObj.team = myTeam;
             actionQueue.push(cmdObj);
             if (!isSinglePlayer) sendData(cmdObj);
@@ -293,13 +293,13 @@
             }
 
             let margin = 8;
+            // Spawn en Esquinas Opuestas garantizado para no crear bucles infinitos matemáticos
             let pBaseX = margin + Math.floor(seededRandom() * 5);
             let pBaseY = margin + Math.floor(seededRandom() * 5);
-            // FIX: Esquinas opuestas aseguradas para evitar infinite loop
             let eBaseX = (MAP_W - margin - 5) - Math.floor(seededRandom() * 5);
             let eBaseY = (MAP_H - margin - 5) - Math.floor(seededRandom() * 5);
             
-            if (seededRandom() > 0.5) { let temp = pBaseX; pBaseX = eBaseX; eBaseX = temp; }
+            if (seededRandom() > 0.5) { let tempX = pBaseX, tempY = pBaseY; pBaseX = eBaseX; pBaseY = eBaseY; eBaseX = tempX; eBaseY = tempY; }
 
             createBuilding(B_TOWN_CENTER, pBaseX, pBaseY, 2, 1, true);
             createUnit(U_VILLAGER, pBaseX + 3, pBaseY, 1, 1);
@@ -374,7 +374,8 @@
                 if (b.type === B_GATE && b.team === team && b.isBuilt) solid = false;
                 if (solid) { for(let bx=b.gridX; bx<b.gridX+b.size; bx++) { for(let by=b.gridY; by<b.gridY+b.size; by++) { if(bx>=0 && bx<MAP_W && by>=0 && by<MAP_H) grid[bx][by] = 1; } } }
             }
-            let steps = 0, dirs = [[0,-1], [1,0], [0,1], [-1,0]];
+            // Añadidas diagonales con coste real de 1.41 para evitar los zigzags raros
+            let dirs = [[0,-1,1], [1,0,1], [0,1,1], [-1,0,1], [1,1,1.414], [-1,-1,1.414], [1,-1,1.414], [-1,1,1.414]];
             
             while(openSet.length > 0 && steps++ < maxSteps) {
                 openSet.sort((a,b) => a.f - b.f); let curr = openSet.shift();
@@ -383,8 +384,13 @@
                 for (let d of dirs) {
                     let nx = curr.x + d[0], ny = curr.y + d[1];
                     if (nx<0 || ny<0 || nx>=MAP_W || ny>=MAP_H || closedSet.has(`${nx},${ny}`)) continue;
+                    
+                    // Anti-corner cutting (No pasar a través de dos muros en diagonal)
+                    if (d[2] > 1.0) { if (grid[curr.x][ny] === 1 || grid[nx][curr.y] === 1) continue; }
+                    
                     let isSolid = grid[nx][ny] === 1 && !(nx === ex && ny === ey); if (isSolid) continue;
-                    let g = curr.g + 1; let neighbor = openSet.find(n => n.x === nx && n.y === ny);
+                    
+                    let g = curr.g + d[2]; let neighbor = openSet.find(n => n.x === nx && n.y === ny);
                     if (!neighbor) { openSet.push({x: nx, y: ny, g: g, f: g + Math.hypot(ex-nx, ey-ny), parent: curr}); } 
                     else if (g < neighbor.g) { neighbor.g = g; neighbor.f = g + Math.hypot(ex-nx, ey-ny); neighbor.parent = curr; }
                 }
@@ -449,23 +455,29 @@
         }
 
         function moveUnit(u, pursuing = false) {
-            if (!u.path || u.path.length === 0) { if(!pursuing) { u.state = 'idle'; forceGridSnap(u); } return; }
+            if (!u.path || u.path.length === 0) { 
+                if(!pursuing && u.state === 'moving') { u.state = 'idle'; forceGridSnap(u); } 
+                return; 
+            }
             let nextNode = u.path[0]; let dx = nextNode.x - u.x; let dy = nextNode.y - u.y;
             let dist = Math.hypot(dx, dy); let speed = STATS[u.type].speed;
 
-            if (['gathering', 'building', 'repairing', 'attacking'].includes(u.state) && u.targetEntity) {
+            if (['gathering', 'building', 'repairing', 'attacking', 'merging'].includes(u.state) && u.targetEntity) {
                 let tx = u.targetEntity.x !== undefined ? u.targetEntity.x : u.targetEntity.gridX + u.targetEntity.size/2;
                 let ty = u.targetEntity.y !== undefined ? u.targetEntity.y : u.targetEntity.gridY + u.targetEntity.size/2;
                 let finalDist = Math.hypot(tx - u.x, ty - u.y);
-                // FIX: Ajuste matemático de choque para diagonales
-                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + 0.5) : (u.targetEntity.size > 1 ? 2.4 : 1.6);
-                if (finalDist <= reqDist) { u.path = []; forceGridSnap(u); return; }
+                // Aquí el arreglo a la oscilación: Distancias más anchas para absorber el fallo diagonal.
+                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + 0.5) : (u.targetEntity.size > 1 ? 2.4 : 1.5);
+                if (finalDist <= reqDist) { 
+                    u.path = []; // Detiene el movimiento pero NO SE FUERZA a la cuadrícula, evitando que vuelva a alejarse
+                    return; 
+                }
             }
 
             if (dist > speed) { u.x += (dx / dist) * speed; u.y += (dy / dist) * speed; } 
             else {
                 u.x = nextNode.x; u.y = nextNode.y; u.path.shift();
-                if (u.path.length === 0 && !pursuing && !['gathering', 'building', 'repairing', 'merging'].includes(u.state)) {
+                if (u.path.length === 0 && !pursuing && u.state === 'moving') {
                     u.state = 'idle'; forceGridSnap(u);
                 }
             }
@@ -543,9 +555,10 @@
                         u.state = 'idle'; u.targetEntity = null; forceGridSnap(u);
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX + u.targetEntity.size/2) - u.x, (u.targetEntity.gridY + u.targetEntity.size/2) - u.y);
-                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.6;
+                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.5;
                         if (dist <= allowed) {
-                            forceGridSnap(u); u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
+                            // Está trabajando: Hace la animación pero NO resetea su posición
+                            u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
                             if(u.timer >= (u.state==='building'?15:30)) {
                                 u.timer = 0; u.targetEntity.hp += (15 * u.count); spawnFx(u.x, u.y - 0.5, u.state==='building'?'🔨':'🔧', '#fbbf24');
                                 if (u.targetEntity.hp >= u.targetEntity.maxHp) {
@@ -562,8 +575,9 @@
                         else { u.state = 'idle'; u.targetEntity = null; forceGridSnap(u); }
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX+0.5) - u.x, (u.targetEntity.gridY+0.5) - u.y);
-                        if (dist <= 1.6) { // FIX: Sincronizado para frenado en diagonales
-                            forceGridSnap(u); u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
+                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.5;
+                        if (dist <= allowed) {
+                            u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
                             if (u.timer >= 60) {
                                 u.timer = 0; let amt = u.count; u.targetEntity.resources -= amt;
                                 if(u.targetEntity.type === R_WOOD) resources[u.team].wood += amt;
@@ -582,7 +596,7 @@
                         let ty = u.targetEntity.y !== undefined ? u.targetEntity.y : (u.targetEntity.gridY + u.targetEntity.size/2);
                         let dist = Math.hypot(tx - u.x, ty - u.y);
                         if (dist <= STATS[u.type].range + 0.5) {
-                            forceGridSnap(u); u.animOffset = Math.sin(Date.now() / 80) * 0.25; u.timer++;
+                            u.animOffset = Math.sin(Date.now() / 80) * 0.25; u.timer++;
                             if(u.timer >= 50) {
                                 u.timer = 0; let dmg = STATS[u.type].atk * u.count; u.targetEntity.hp -= dmg; u.targetEntity.hitFlash = 10; spawnFx(tx, ty, `-${dmg}`, '#ef4444');
                             }
@@ -665,7 +679,7 @@
             b.innerHTML = `<span class="text-xl sm:text-2xl mb-0.5 sm:mb-1">${icon}</span><span class="text-[9px] sm:text-[10px] font-bold leading-none text-center">${text}</span><span class="text-[8px] sm:text-[9px] font-mono mt-auto">${costStr}</span>`;
             if(enabled) {
                 b.onpointerdown = (e) => { 
-                    e.preventDefault(); e.stopPropagation(); 
+                    e.preventDefault(); e.stopPropagation(); // Evita que los toques pasen a la grilla y cancelen órdenes
                     if(onclick()) {
                         setTimeout(() => { updateUI(); openActionMenu(selection ? units.find(u=>u.id===selection.id) || buildings.find(b=>b.id===selection.id) : null); }, 50);
                     }
@@ -695,7 +709,6 @@
                 addBtn('🧱', 'Muro', '10🪵', () => { pendingAction = 'build_wall'; setMsg(`Arrastra para muro`); return true; }, canAfford(COSTS[B_WALL], myTeam));
             } else { hasActions = false; actionContainer.classList.add('hidden'); }
 
-            // FIX: Validar correctamente si es una unidad para Dividir y Unir (Los edificios no se unen)
             if (units.some(u => u.id === entity.id) && entity.team === myTeam) {
                 hasActions = true; actionContainer.classList.remove('hidden');
                 addBtn('🔗', 'Unir', '', () => { pendingAction = 'merge'; setMsg('Toca tropa igual aliada'); return true; }, true);
@@ -725,16 +738,23 @@
                 return;
             }
             if (isDrawingWall || !isDragging) return;
-            let dx = (e.clientX - dragStart.x) / renderScale, dy = (e.clientY - dragStart.y) / renderScale;
-            // FIX: Aumentamos la tolerancia a 20 pixeles para evitar cancelaciones accidentales al hacer click.
-            if (Math.hypot(dx, dy) > 20) hasMovedDrag = true; 
-            if (hasMovedDrag) { cam.x = Math.max(0, Math.min(camStart.x - dx, MAP_W * TILE_SIZE - (window.innerWidth / renderScale))); cam.y = Math.max(0, Math.min(camStart.y - dy, MAP_H * TILE_SIZE - (window.innerHeight / renderScale))); }
+            
+            // Calculo de arrastre con píxeles reales de la pantalla, no afectados por el zoom
+            let screenDx = e.clientX - dragStart.x, screenDy = e.clientY - dragStart.y;
+            if (Math.hypot(screenDx, screenDy) > 20) hasMovedDrag = true; 
+            if (hasMovedDrag) { 
+                let dx = screenDx / renderScale, dy = screenDy / renderScale;
+                cam.x = Math.max(0, Math.min(camStart.x - dx, MAP_W * TILE_SIZE - (window.innerWidth / renderScale))); cam.y = Math.max(0, Math.min(camStart.y - dy, MAP_H * TILE_SIZE - (window.innerHeight / renderScale))); 
+            }
         });
 
         document.getElementById('game-container').addEventListener('pointerup', e => {
             activePointers = activePointers.filter(p => p.id !== e.pointerId); if (activePointers.length === 0) initialPinchDist = null;
             isDragging = false;
             let wX = ((e.clientX / renderScale) + cam.x) / TILE_SIZE, wY = ((e.clientY / renderScale) + cam.y) / TILE_SIZE;
+            // Seguro contra clicks fuera del mapa
+            if (wX < 0 || wY < 0 || wX >= MAP_W || wY >= MAP_H) return;
+            
             let gx = Math.floor(wX), gy = Math.floor(wY), targetCenterX = gx + 0.5, targetCenterY = gy + 0.5;
 
             if (isDrawingWall) {
@@ -878,7 +898,6 @@
                     ctx.fill(); ctx.stroke();
                 });
 
-                // Badge de Tropas
                 ctx.fillStyle = u.team === myTeam ? '#2563eb' : '#b91c1c'; ctx.beginPath(); ctx.arc(drawPx + r*0.7, drawPy - r*0.7, TILE_SIZE * 0.25, 0, Math.PI*2); ctx.fill();
                 ctx.strokeStyle = 'white'; ctx.lineWidth = 1.5; ctx.stroke();
                 ctx.fillStyle = 'white'; ctx.font = `bold ${TILE_SIZE * 0.35}px Inter`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(u.count, drawPx + r*0.7, drawPy - r*0.7);
@@ -903,6 +922,7 @@
             mCtx.fillStyle = '#0f172a'; mCtx.fillRect(0, 0, minimap.width, minimap.height);
             let sX = minimap.width / MAP_W, sY = minimap.height / MAP_H; 
             for (let x = 0; x < MAP_W; x++) for (let y = 0; y < MAP_H; y++) if (fogGrid[x] && fogGrid[x][y] >= 1) if (mapGrid[x][y] === 1) { mCtx.fillStyle = '#3f6212'; mCtx.fillRect(x*sX, y*sY, sX, sY); }
+            
             for (let b of buildings) {
                 if (fogGrid[b.gridX] && fogGrid[b.gridX][b.gridY] >= 1) {
                     if (b.type === R_WOOD) mCtx.fillStyle = '#14532d'; else if (b.type === R_GOLD) mCtx.fillStyle = '#ca8a04'; else if (b.type === R_FOOD) mCtx.fillStyle = '#b91c1c';
@@ -913,6 +933,14 @@
             for (let u of units) {
                 if(u.team === myTeam || (fogGrid[Math.floor(u.x)] && fogGrid[Math.floor(u.x)][Math.floor(u.y)] === 2)) {
                     mCtx.fillStyle = u.team === myTeam ? '#93c5fd' : '#fca5a5'; mCtx.fillRect(u.x*sX - sX/2, u.y*sY - sY/2, sX*1.5, sY*1.5);
+                }
+            }
+            
+            // Sombra de Niebla sobre el Minimapa
+            for (let x = 0; x < MAP_W; x++) {
+                for (let y = 0; y < MAP_H; y++) {
+                    if (fogGrid[x] && fogGrid[x][y] === 1) { mCtx.fillStyle = 'rgba(15, 23, 42, 0.55)'; mCtx.fillRect(x*sX, y*sY, sX, sY); } 
+                    else if (fogGrid[x] && fogGrid[x][y] === 0) { mCtx.fillStyle = '#0f172a'; mCtx.fillRect(x*sX, y*sY, sX, sY); }
                 }
             }
         }
