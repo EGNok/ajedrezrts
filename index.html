@@ -212,7 +212,9 @@
         }
         // IDs deterministas para la generación del mapa, IDs completamente aleatorios para acciones del usuario
         function generateId(isDeterministic = false) {
-            return Math.floor((isDeterministic ? seededRandom() : Math.random()) * 1000000000).toString(36) + Math.random().toString(36).substring(2, 5);
+            let r1 = isDeterministic ? seededRandom() : Math.random();
+            let r2 = isDeterministic ? seededRandom() : Math.random();
+            return Math.floor(r1 * 1000000000).toString(36) + r2.toString(36).substring(2, 5);
         }
 
         // --- SPRITES ---
@@ -614,7 +616,7 @@
                         else { u.state = 'idle'; u.targetEntity = null; }
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX+0.5) - u.x, (u.targetEntity.gridY+0.5) - u.y);
-                        if (dist <= 1.3) {
+                        if (dist <= 1.6) {
                             u.timer += u.count;
                             if (u.timer >= 60) {
                                 u.timer = 0; let amt = u.count; u.targetEntity.resources -= amt;
@@ -700,7 +702,7 @@
                 let tx = u.targetEntity.x !== undefined ? u.targetEntity.x : u.targetEntity.gridX + u.targetEntity.size/2;
                 let ty = u.targetEntity.y !== undefined ? u.targetEntity.y : u.targetEntity.gridY + u.targetEntity.size/2;
                 let finalDist = Math.hypot(tx - u.x, ty - u.y);
-                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + (u.targetEntity.size ? u.targetEntity.size/2 : 0) + 0.3) : ((u.targetEntity.size ? u.targetEntity.size/2 : 0) + 1.3);
+                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + (u.targetEntity.size ? u.targetEntity.size/2 : 0) + 0.3) : ((u.targetEntity.size ? u.targetEntity.size/2 : 0) + 1.0);
                 if (finalDist <= reqDist) { u.path = []; return; }
             }
 
