@@ -47,7 +47,7 @@
             
             <div id="setup-section" class="flex flex-col gap-4">
                 <input type="text" id="player-name" placeholder="Tu Apodo..." class="p-3 rounded-lg border-2 border-slate-300 outline-none focus:border-blue-500 text-lg font-semibold text-slate-700 bg-white" maxlength="12">
-                <p id="peer-status" class="text-sm font-semibold text-center text-slate-500">Conectando a servidor de enlaces...</p>
+                <p id="peer-status" class="text-sm font-semibold text-center text-slate-500">Conectando a servidor PeerJS...</p>
                 <div class="flex gap-2">
                     <button id="btn-host" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold py-3 px-2 rounded-lg shadow-md transition-transform active:scale-95 text-sm sm:text-base opacity-50 cursor-not-allowed" disabled>Crear Partida</button>
                     <button id="btn-join-ui" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-2 rounded-lg shadow-md transition-transform active:scale-95 text-sm sm:text-base opacity-50 cursor-not-allowed" disabled>Unirse</button>
@@ -114,35 +114,39 @@
     </div>
 
     <script>
+        // Variables de Red y Estado
         let peer = null; let peerConn = null; let myPeerId = null;
         let playerName = ""; let myTeam = 1; let isSinglePlayer = false;
         let gameStatus = 'lobby'; 
         let actionQueue = []; 
-        let simulationInterval = null;
         let gameTick = 0;
+        let lastTime = 0;
+        let tickAccumulator = 0;
+        const TICK_RATE = 1000 / 30; // 30 FPS Lockstep Fijo
 
+        // Referencias a UI y Canvas
         const canvas = document.getElementById('gameCanvas'); const ctx = canvas.getContext('2d');
         const minimap = document.getElementById('minimapCanvas'); const mCtx = minimap.getContext('2d');
         const minimapContainer = document.getElementById('minimap-container');
-        
         const uiFood = document.getElementById('res-food'); const uiWood = document.getElementById('res-wood'); const uiGold = document.getElementById('res-gold');
         const uiPop = document.getElementById('pop-count'); const uiInfo = document.getElementById('info-text');
         const actionContainer = document.getElementById('action-buttons'); const minimapCamUI = document.getElementById('minimap-cam');
 
+        // Variables del Mapa y Cámara
         const TILE_SIZE = 50; const MAP_W = 64; const MAP_H = 64;     
         let mapGrid = []; let fogGrid = [];
-
         let cam = { x: 0, y: 0 };
         let isDragging = false, dragStart = { x: 0, y: 0 }, camStart = { x: 0, y: 0 }, hasMovedDrag = false;
         let isMinimapDragging = false;
         let renderScale = 1.0, activePointers = [], initialPinchDist = null, initialScale = 1;
         let isDrawingWall = false, lineStart = null;
 
+        // Entidades y Recursos
         let resources = { 1: { food: 200, wood: 200, gold: 100 }, 2: { food: 200, wood: 200, gold: 100 } };
         let units = []; let buildings = []; let fxList = []; 
         let selection = null; let pendingAction = null; let actionTargetData = null; 
 
-        // Definiciones (Nombres de Ajedrez integrados)
+        // Definiciones del Juego
         const U_VILLAGER = 'villager', U_INFANTRY = 'infantry', U_ARCHER = 'archer', U_CAVALRY = 'cavalry', U_EXPLORER = 'explorer';
         const B_TOWN_CENTER = 'tc', B_HOUSE = 'house', B_BARRACKS = 'barracks', B_ARCHERY = 'archery', B_STABLE = 'stable', B_TOWER = 'tower', B_WALL = 'wall', B_GATE = 'gate';
         const R_WOOD = 'wood', R_GOLD = 'gold', R_FOOD = 'food';
@@ -161,6 +165,7 @@
             [U_EXPLORER]: { hp: 35, atk: 4, range: 1.2, speed: 0.1,  trainTime: 200 }
         };
 
+        // Motor RNG y Sprites
         let _seed = 12345;
         function setSeed(s) { _seed = s; }
         function seededRandom() {
@@ -168,9 +173,8 @@
             t = Math.imul(t ^ t >>> 15, t | 1); t ^= t + Math.imul(t ^ t >>> 7, t | 61);
             return ((t ^ t >>> 14) >>> 0) / 4294967296;
         }
-        function generateId() {
-            let r1 = seededRandom(); let r2 = seededRandom();
-            return Math.floor(r1 * 1000000000).toString(36) + r2.toString(36).substring(2, 5);
+        function generateId() { // Determinista usando la semilla
+            return Math.floor(seededRandom() * 1000000000).toString(36);
         }
 
         const SPRITE_FILES = {
@@ -182,9 +186,7 @@
             'u_villager_2': 'u_villager_2.png', 'u_infantry_2': 'u_infantry_2.png', 'u_archer_2': 'u_archer_2.png', 'u_cavalry_2': 'u_cavalry_2.png', 'u_explorer_2': 'u_explorer_2.png'
         };
         const loadedSprites = {};
-        for(let key in SPRITE_FILES) {
-            let img = new Image(); img.src = SPRITE_FILES[key]; loadedSprites[key] = img;
-        }
+        for(let key in SPRITE_FILES) { let img = new Image(); img.src = SPRITE_FILES[key]; loadedSprites[key] = img; }
 
         function initPeer() {
             try {
@@ -197,8 +199,7 @@
                 });
                 peer.on('connection', (conn) => {
                     peerConn = conn;
-                    document.getElementById('host-wait-msg').innerText = "Rival encontrado. Sincronizando...";
-                    // Esperar activamente a que el túnel de conexión esté 100% abierto antes de mandar el Start.
+                    document.getElementById('host-wait-msg').innerText = "Rival conectado. Sincronizando...";
                     peerConn.on('open', () => { 
                         setupConnection();
                         let gameSeed = Math.floor(Math.random() * 9999999);
@@ -207,20 +208,18 @@
                     });
                 });
                 peer.on('error', (err) => {
-                    console.warn("PeerJS Warning:", err);
+                    console.warn("PeerJS Error:", err);
                     document.getElementById('peer-status').innerText = "Error de red. Juega Modo Solo 🤖";
                     document.getElementById('btn-singleplayer').classList.add('animate-bounce');
                 });
-            } catch(e) {
-                document.getElementById('peer-status').innerText = "Error. Usa el Modo Solo 🤖";
-            }
+            } catch(e) { document.getElementById('peer-status').innerText = "Error. Usa el Modo Solo 🤖"; }
         }
 
         document.getElementById('btn-host').addEventListener('click', () => {
             playerName = document.getElementById('player-name').value.trim() || "Host"; myTeam = 1;
             document.getElementById('setup-section').classList.add('hidden');
             document.getElementById('host-section').classList.remove('hidden'); document.getElementById('host-section').classList.add('flex');
-            document.getElementById('room-code').innerText = myPeerId || "Error_Generando_ID";
+            document.getElementById('room-code').innerText = myPeerId || "Error_ID";
         });
 
         document.getElementById('btn-join-ui').addEventListener('click', () => {
@@ -232,7 +231,6 @@
         document.getElementById('btn-join-connect').addEventListener('click', () => {
             let code = document.getElementById('join-code').value.trim(); if (!code) return;
             document.getElementById('btn-join-connect').innerText = "Conectando...";
-            // reliable: true asegura que no se pierdan comandos en el camino (crítico para Lockstep)
             peerConn = peer.connect(code, { reliable: true });
             peerConn.on('open', () => { 
                 setupConnection(); 
@@ -251,13 +249,11 @@
                 if (data.type === 'START') {
                     if (myTeam === 2) startGame(data.seed, 2);
                 } else {
-                    // Si el paquete llega extremadamente tarde, ejecutamos de inmediato para no congelar.
-                    if (data.tick <= gameTick) data.tick = gameTick + 1;
+                    if (data.tick <= gameTick) data.tick = gameTick + 1; // Resguardo Anti-Desync
                     actionQueue.push(data);
                 }
             });
         }
-
         function sendData(dataObj) { if (peerConn && peerConn.open) peerConn.send(dataObj); }
         document.getElementById('btn-cancel-host').addEventListener('click', () => location.reload());
         document.getElementById('btn-cancel-join').addEventListener('click', () => location.reload());
@@ -272,13 +268,17 @@
                 document.getElementById('ui-layer').classList.remove('hidden'); document.getElementById('ui-layer').classList.add('flex');
                 
                 setSeed(mapSeed); generateMap(); 
-                simulationInterval = setInterval(simulationUpdate, 1000 / 30); // 30 FPS Lockstep
-                resize(); requestAnimationFrame(gameLoop);
+                
+                // Reiniciar el reloj DeltaTime Lockstep
+                lastTime = performance.now();
+                tickAccumulator = 0;
+                requestAnimationFrame(gameLoop);
+                resize(); 
             }, 500);
         }
 
         function sendCmd(cmdObj) {
-            // Buffer de 12 ticks (~400ms). Es obligatorio para sincronizar P2P sobre internet.
+            // Buffer de 12 ticks (~400ms) para garantizar sincronización perfecta
             cmdObj.tick = gameTick + 12; 
             cmdObj.team = myTeam;
             actionQueue.push(cmdObj);
@@ -293,11 +293,9 @@
             }
 
             let margin = 8;
-            // Spawn en Esquinas Opuestas garantizado para no crear bucles infinitos matemáticos
-            let pBaseX = margin + Math.floor(seededRandom() * 5);
-            let pBaseY = margin + Math.floor(seededRandom() * 5);
-            let eBaseX = (MAP_W - margin - 5) - Math.floor(seededRandom() * 5);
-            let eBaseY = (MAP_H - margin - 5) - Math.floor(seededRandom() * 5);
+            // Spawns fijos en esquinas opuestas para evitar bucles de cálculos infinitos
+            let pBaseX = margin + Math.floor(seededRandom() * 4); let pBaseY = margin + Math.floor(seededRandom() * 4);
+            let eBaseX = MAP_W - margin - 4 - Math.floor(seededRandom() * 4); let eBaseY = MAP_H - margin - 4 - Math.floor(seededRandom() * 4);
             
             if (seededRandom() > 0.5) { let tempX = pBaseX, tempY = pBaseY; pBaseX = eBaseX; pBaseY = eBaseY; eBaseX = tempX; eBaseY = tempY; }
 
@@ -311,7 +309,7 @@
             createUnit(U_VILLAGER, eBaseX + 2, eBaseY + 3, 1, 2);
             createUnit(U_EXPLORER, eBaseX - 3, eBaseY, 1, 2);
 
-            for (let i = 0; i < 40; i++) {
+            for (let i = 0; i < 45; i++) {
                 let rx = Math.floor(seededRandom() * (MAP_W-4)) + 2, ry = Math.floor(seededRandom() * (MAP_H-4)) + 2;
                 if (!isOccupied(rx, ry, 1)) createBuilding(seededRandom() > 0.4 ? R_FOOD : R_GOLD, rx, ry, 1, 0, true);
             }
@@ -366,35 +364,58 @@
         function findPath(startX, startY, endX, endY, team, ignoreBuildingId = null, maxSteps = 400) {
             let sx = Math.floor(startX), sy = Math.floor(startY), ex = Math.floor(endX), ey = Math.floor(endY);
             if (sx === ex && sy === ey) return []; 
-            let openSet = [{x: sx, y: sy, g: 0, f: Math.hypot(ex-sx, ey-sy), parent: null}]; let closedSet = new Set();
+            let openSet = [{x: sx, y: sy, g: 0, f: Math.hypot(ex-sx, ey-sy), parent: null}]; 
+            let closedSet = new Set();
             let grid = new Array(MAP_W).fill(0).map(() => new Array(MAP_H).fill(0));
             
             for (let b of buildings) {
-                let solid = true; if (b.id === ignoreBuildingId) solid = false;
+                let solid = true; 
+                if (b.id === ignoreBuildingId) solid = false;
                 if (b.type === B_GATE && b.team === team && b.isBuilt) solid = false;
-                if (solid) { for(let bx=b.gridX; bx<b.gridX+b.size; bx++) { for(let by=b.gridY; by<b.gridY+b.size; by++) { if(bx>=0 && bx<MAP_W && by>=0 && by<MAP_H) grid[bx][by] = 1; } } }
+                if (solid) { 
+                    for(let bx=b.gridX; bx<b.gridX+b.size; bx++) { 
+                        for(let by=b.gridY; by<b.gridY+b.size; by++) { 
+                            if(bx>=0 && bx<MAP_W && by>=0 && by<MAP_H) grid[bx][by] = 1; 
+                        } 
+                    } 
+                }
             }
-            // Añadidas diagonales con coste real de 1.41 para evitar los zigzags raros
+            
             let dirs = [[0,-1,1], [1,0,1], [0,1,1], [-1,0,1], [1,1,1.414], [-1,-1,1.414], [1,-1,1.414], [-1,1,1.414]];
+            let steps = 0; // CORRECCIÓN CRÍTICA: Previene que el juego crashee
             
             while(openSet.length > 0 && steps++ < maxSteps) {
-                openSet.sort((a,b) => a.f - b.f); let curr = openSet.shift();
-                if (curr.x === ex && curr.y === ey) { let path = []; while(curr.parent) { path.push({x: curr.x + 0.5, y: curr.y + 0.5}); curr = curr.parent; } return path.reverse(); }
+                openSet.sort((a,b) => a.f - b.f); 
+                let curr = openSet.shift();
+                
+                if (curr.x === ex && curr.y === ey) { 
+                    let path = []; 
+                    while(curr.parent) { path.push({x: curr.x + 0.5, y: curr.y + 0.5}); curr = curr.parent; } 
+                    return path.reverse(); 
+                }
+                
                 closedSet.add(`${curr.x},${curr.y}`);
+                
                 for (let d of dirs) {
                     let nx = curr.x + d[0], ny = curr.y + d[1];
                     if (nx<0 || ny<0 || nx>=MAP_W || ny>=MAP_H || closedSet.has(`${nx},${ny}`)) continue;
                     
-                    // Anti-corner cutting (No pasar a través de dos muros en diagonal)
                     if (d[2] > 1.0) { if (grid[curr.x][ny] === 1 || grid[nx][curr.y] === 1) continue; }
                     
-                    let isSolid = grid[nx][ny] === 1 && !(nx === ex && ny === ey); if (isSolid) continue;
+                    // Permite caminar HACIA un objetivo ignorando que su celda exacta sea sólida
+                    let isSolid = grid[nx][ny] === 1 && !(nx === ex && ny === ey); 
+                    if (isSolid) continue;
                     
-                    let g = curr.g + d[2]; let neighbor = openSet.find(n => n.x === nx && n.y === ny);
-                    if (!neighbor) { openSet.push({x: nx, y: ny, g: g, f: g + Math.hypot(ex-nx, ey-ny), parent: curr}); } 
-                    else if (g < neighbor.g) { neighbor.g = g; neighbor.f = g + Math.hypot(ex-nx, ey-ny); neighbor.parent = curr; }
+                    let g = curr.g + d[2]; 
+                    let neighbor = openSet.find(n => n.x === nx && n.y === ny);
+                    if (!neighbor) { 
+                        openSet.push({x: nx, y: ny, g: g, f: g + Math.hypot(ex-nx, ey-ny), parent: curr}); 
+                    } else if (g < neighbor.g) { 
+                        neighbor.g = g; neighbor.f = g + Math.hypot(ex-nx, ey-ny); neighbor.parent = curr; 
+                    }
                 }
-            } return null;
+            } 
+            return null;
         }
 
         function forceGridSnap(u) { u.x = Math.floor(u.x) + 0.5; u.y = Math.floor(u.y) + 0.5; }
@@ -466,10 +487,11 @@
                 let tx = u.targetEntity.x !== undefined ? u.targetEntity.x : u.targetEntity.gridX + u.targetEntity.size/2;
                 let ty = u.targetEntity.y !== undefined ? u.targetEntity.y : u.targetEntity.gridY + u.targetEntity.size/2;
                 let finalDist = Math.hypot(tx - u.x, ty - u.y);
-                // Aquí el arreglo a la oscilación: Distancias más anchas para absorber el fallo diagonal.
-                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + 0.5) : (u.targetEntity.size > 1 ? 2.4 : 1.5);
+                
+                // CORRECCIÓN MATEMÁTICA: 1.6 absorbe la diagonal perfecta (1.414) evitando el "Baile Diagonal"
+                let reqDist = (u.state === 'attacking') ? (STATS[u.type].range + 0.5) : (u.targetEntity.size > 1 ? 2.4 : 1.6);
                 if (finalDist <= reqDist) { 
-                    u.path = []; // Detiene el movimiento pero NO SE FUERZA a la cuadrícula, evitando que vuelva a alejarse
+                    u.path = []; // Se detiene y NO se fuerza al centro (GridSnap) para no cancelar la acción.
                     return; 
                 }
             }
@@ -484,7 +506,6 @@
         }
 
         function simulationUpdate() {
-            if (gameStatus !== 'playing') return;
             gameTick++;
 
             actionQueue.sort((a, b) => a.tick - b.tick);
@@ -555,9 +576,8 @@
                         u.state = 'idle'; u.targetEntity = null; forceGridSnap(u);
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX + u.targetEntity.size/2) - u.x, (u.targetEntity.gridY + u.targetEntity.size/2) - u.y);
-                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.5;
+                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.6;
                         if (dist <= allowed) {
-                            // Está trabajando: Hace la animación pero NO resetea su posición
                             u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
                             if(u.timer >= (u.state==='building'?15:30)) {
                                 u.timer = 0; u.targetEntity.hp += (15 * u.count); spawnFx(u.x, u.y - 0.5, u.state==='building'?'🔨':'🔧', '#fbbf24');
@@ -575,7 +595,7 @@
                         else { u.state = 'idle'; u.targetEntity = null; forceGridSnap(u); }
                     } else {
                         let dist = Math.hypot((u.targetEntity.gridX+0.5) - u.x, (u.targetEntity.gridY+0.5) - u.y);
-                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.5;
+                        let allowed = u.targetEntity.size > 1 ? 2.4 : 1.6;
                         if (dist <= allowed) {
                             u.animOffset = Math.sin(Date.now() / 100) * 0.2; u.timer += u.count;
                             if (u.timer >= 60) {
@@ -679,7 +699,7 @@
             b.innerHTML = `<span class="text-xl sm:text-2xl mb-0.5 sm:mb-1">${icon}</span><span class="text-[9px] sm:text-[10px] font-bold leading-none text-center">${text}</span><span class="text-[8px] sm:text-[9px] font-mono mt-auto">${costStr}</span>`;
             if(enabled) {
                 b.onpointerdown = (e) => { 
-                    e.preventDefault(); e.stopPropagation(); // Evita que los toques pasen a la grilla y cancelen órdenes
+                    e.preventDefault(); e.stopPropagation(); 
                     if(onclick()) {
                         setTimeout(() => { updateUI(); openActionMenu(selection ? units.find(u=>u.id===selection.id) || buildings.find(b=>b.id===selection.id) : null); }, 50);
                     }
@@ -696,9 +716,10 @@
             if (entity.isBuilt === false) { addBtn('❌', 'Cerrar', '', () => { clearSelection(); return true; }, true); return; }
 
             if (entity.type === B_TOWN_CENTER && entity.team === myTeam) {
+                // CORRECCIÓN: El centro urbano solo saca Peones.
                 addBtn('🧑‍🌾', 'Peón', '50🍖', () => { if (canAfford(COSTS[U_VILLAGER], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_VILLAGER, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_VILLAGER], myTeam) && checkPop(myTeam));
             } else if (entity.type === B_BARRACKS && entity.team === myTeam) {
-                addBtn('⚔️', 'Guerrero', '60🍖 20🪙', () => { if (canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_INFANTRY, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam));
+                addBtn('⚔️️', 'Guerrero', '60🍖 20🪙', () => { if (canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_INFANTRY, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_INFANTRY], myTeam) && checkPop(myTeam));
             } else if (entity.type === B_ARCHERY && entity.team === myTeam) {
                 addBtn('🎯', 'Alfil', '25🪵 45🪙', () => { if (canAfford(COSTS[U_ARCHER], myTeam) && checkPop(myTeam)) { sendCmd({type:'TRAIN', buildingId: entity.id, uType: U_ARCHER, newUnitId: generateId()}); return true;} return false; }, canAfford(COSTS[U_ARCHER], myTeam) && checkPop(myTeam));
             } else if (entity.type === B_STABLE && entity.team === myTeam) {
@@ -711,7 +732,7 @@
 
             if (units.some(u => u.id === entity.id) && entity.team === myTeam) {
                 hasActions = true; actionContainer.classList.remove('hidden');
-                addBtn('🔗', 'Unir', '', () => { pendingAction = 'merge'; setMsg('Toca tropa igual aliada'); return true; }, true);
+                addBtn('🔗', 'Unir', '', () => { pendingAction = 'merge'; setMsg('Toca tropa aliada a fusionar'); return true; }, true);
                 if (entity.count > 1) { addBtn('➗', 'Dividir', '', () => { sendCmd({type: 'DIVIDE', uid: entity.id, newUnitId: generateId()}); clearSelection(); return true; }, true); }
             }
             if (hasActions) addBtn('❌', 'Cerrar', '', () => { clearSelection(); return true; }, true);
@@ -739,7 +760,7 @@
             }
             if (isDrawingWall || !isDragging) return;
             
-            // Calculo de arrastre con píxeles reales de la pantalla, no afectados por el zoom
+            // CORRECCIÓN MATEMÁTICA: Deadzone de 20 píxeles para PC y Móvil
             let screenDx = e.clientX - dragStart.x, screenDy = e.clientY - dragStart.y;
             if (Math.hypot(screenDx, screenDy) > 20) hasMovedDrag = true; 
             if (hasMovedDrag) { 
@@ -752,7 +773,6 @@
             activePointers = activePointers.filter(p => p.id !== e.pointerId); if (activePointers.length === 0) initialPinchDist = null;
             isDragging = false;
             let wX = ((e.clientX / renderScale) + cam.x) / TILE_SIZE, wY = ((e.clientY / renderScale) + cam.y) / TILE_SIZE;
-            // Seguro contra clicks fuera del mapa
             if (wX < 0 || wY < 0 || wX >= MAP_W || wY >= MAP_H) return;
             
             let gx = Math.floor(wX), gy = Math.floor(wY), targetCenterX = gx + 0.5, targetCenterY = gy + 0.5;
@@ -774,17 +794,18 @@
                 pendingAction = null; actionTargetData = null; clearSelection(); return;
             }
 
-            if (pendingAction === 'merge') {
-                let u = units.find(unit => selection && unit.id === selection.id);
-                let ct = units.find(unit => Math.hypot(unit.x - wX, unit.y - wY) <= 1.2 && fogGrid[Math.floor(unit.x)] && fogGrid[Math.floor(unit.x)][Math.floor(unit.y)] >= 1);
-                if (u && ct && ct.team === myTeam && ct.id !== u.id && ct.type === u.type) {
-                    sendCmd({type: 'MERGE', uids: [u.id], targetId: ct.id});
-                }
-                pendingAction = null; clearSelection(); return;
-            }
-
             let clickedUnit = units.find(u => Math.hypot(u.x - wX, u.y - wY) <= 0.8 && fogGrid[Math.floor(u.x)] && fogGrid[Math.floor(u.x)][Math.floor(u.y)] >= 1);
             let clickedBuilding = buildings.find(b => gx >= b.gridX && gx < b.gridX + b.size && gy >= b.gridY && gy < b.gridY + b.size && fogGrid[b.gridX] && fogGrid[b.gridX][gy] >= 1);
+
+            if (pendingAction === 'merge') {
+                let u = units.find(unit => selection && unit.id === selection.id);
+                // CORRECCIÓN: Fusión usando click exacto, mucho más fiable
+                if (u && clickedUnit && clickedUnit.team === myTeam && clickedUnit.id !== u.id && clickedUnit.type === u.type) {
+                    sendCmd({type: 'MERGE', uids: [u.id], targetId: clickedUnit.id});
+                    setMsg('Fusionando'); setTimeout(hideMsg, 2000);
+                } else { setMsg('Fusión cancelada'); setTimeout(hideMsg, 2000); }
+                pendingAction = null; clearSelection(); return;
+            }
 
             if (clickedUnit && selection && selection.type === 'unit' && selection.id === clickedUnit.id) { clearSelection(); return; }
             if (clickedBuilding && selection && selection.type === 'building' && selection.id === clickedBuilding.id) { clearSelection(); return; }
@@ -936,7 +957,6 @@
                 }
             }
             
-            // Sombra de Niebla sobre el Minimapa
             for (let x = 0; x < MAP_W; x++) {
                 for (let y = 0; y < MAP_H; y++) {
                     if (fogGrid[x] && fogGrid[x][y] === 1) { mCtx.fillStyle = 'rgba(15, 23, 42, 0.55)'; mCtx.fillRect(x*sX, y*sY, sX, sY); } 
@@ -950,7 +970,26 @@
             canvas.width = window.innerWidth; canvas.height = window.innerHeight; minimap.width = 144; minimap.height = 144; draw(); 
         }
         window.addEventListener('resize', resize);
-        function gameLoop() { if (gameStatus === 'playing') draw(); requestAnimationFrame(gameLoop); }
+        
+        // CORRECCIÓN MATEMÁTICA: DeltaTime Clock - Evita congelamientos y desincronización
+        function gameLoop(timestamp) { 
+            if (!lastTime) lastTime = timestamp;
+            let dt = timestamp - lastTime;
+            lastTime = timestamp;
+
+            if (gameStatus === 'playing') {
+                tickAccumulator += dt;
+                let maxCatchup = 10;
+                while (tickAccumulator >= TICK_RATE && maxCatchup > 0) {
+                    simulationUpdate();
+                    tickAccumulator -= TICK_RATE;
+                    maxCatchup--;
+                }
+                if(maxCatchup === 0) tickAccumulator = 0; // Evita que la PC colapse si cambias de pestaña
+                draw(); 
+            }
+            requestAnimationFrame(gameLoop); 
+        }
     </script>
 </body>
 </html>
