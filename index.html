@@ -154,7 +154,7 @@ const SPRITE_FILES = {
   'u_peon_1':'u_villager_1.png','u_guerrero_1':'u_infantry_1.png','u_alfil_1':'u_archer_1.png','u_caballero_1':'u_cavalry_1.png','u_explorer_1':'u_explorer_1.png',
   'u_peon_2':'u_villager_2.png','u_guerrero_2':'u_infantry_2.png','u_alfil_2':'u_archer_2.png','u_caballero_2':'u_cavalry_2.png','u_explorer_2':'u_explorer_2.png'
 };
-const IMG = 'img/';   // carpeta de imágenes (cámbiala si tu carpeta está en otra ruta)
+const IMG = '/img/';   // carpeta de imágenes (cámbiala si tu carpeta está en otra ruta)
 const FONT = "'JuegoFuente', 'Inter', sans-serif";
 const loadedSprites = {};
 for (let key in SPRITE_FILES) { let img = new Image(); img.src = IMG + SPRITE_FILES[key]; loadedSprites[key] = img; }
